@@ -25,6 +25,23 @@ interface ClipLibraryEntry extends GeneratedClip {
   thumbnailUrl: string;
 }
 
+async function safeReadJson<T>(res: Response): Promise<T> {
+  const text = await res.text();
+  if (!text.trim()) {
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status} with an empty response.`);
+    }
+    return {} as T;
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `ClipHunt API returned an unexpected response (HTTP ${res.status}). Please refresh or retry in a moment.`,
+    );
+  }
+}
+
 export default function App() {
   const [activeNav, setActiveNav] = useState<NavSection>('dashboard');
   const [studioSubView, setStudioSubView] = useState<StudioSubView>('studio');
@@ -43,26 +60,43 @@ export default function App() {
   const [isRendering, setIsRendering] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
 
-  const fetchDashboard = useCallback(async () => {
-    const [dashRes, clipsRes] = await Promise.all([
-      fetch('/api/dashboard'),
-      fetch('/api/clips'),
-    ]);
-    if (!dashRes.ok) throw new Error('Failed to load workspace data.');
-    const dashData = (await dashRes.json()) as {
-      usage: UserUsage;
-      projects: ProjectDetail[];
-      settings: UserSettings;
-    };
-    setUsage(dashData.usage);
-    setProjects(dashData.projects);
-    setSettings(dashData.settings);
+  const fetchDashboard = useCallback(async (retries = 2) => {
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const [dashRes, clipsRes] = await Promise.all([
+          fetch('/api/dashboard'),
+          fetch('/api/clips'),
+        ]);
+        if (!dashRes.ok) {
+          if (attempt < retries && (dashRes.status === 502 || dashRes.status === 503 || dashRes.status === 504)) {
+            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+            continue;
+          }
+          throw new Error(`Failed to load workspace data (HTTP ${dashRes.status}).`);
+        }
+        const dashData = await safeReadJson<{
+          usage: UserUsage;
+          projects: ProjectDetail[];
+          settings: UserSettings;
+        }>(dashRes);
+        setUsage(dashData.usage);
+        setProjects(dashData.projects);
+        setSettings(dashData.settings);
 
-    if (clipsRes.ok) {
-      const clipsData = (await clipsRes.json()) as { clips: ClipLibraryEntry[] };
-      setLibraryClips(clipsData.clips);
+        if (clipsRes.ok) {
+          const clipsData = await safeReadJson<{ clips: ClipLibraryEntry[] }>(clipsRes);
+          setLibraryClips(clipsData.clips);
+        }
+        return dashData.projects;
+      } catch (err) {
+        lastError = err;
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+        }
+      }
     }
-    return dashData.projects;
+    throw lastError instanceof Error ? lastError : new Error('Failed to load workspace data.');
   }, []);
 
   useEffect(() => {
@@ -171,9 +205,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
       });
-      const data = await res.json();
+      const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(res);
       if (!res.ok) throw new Error(data.error || 'Failed to start analysis.');
-      await fetchDashboard();
+      if (!data.projectId || !data.jobId) {
+        throw new Error('Server did not return an analysis job ID.');
+      }
+      await fetchDashboard(0);
       setActiveProjectId(data.projectId);
       setActiveJobId(data.jobId);
       setActiveNav('create');
@@ -195,9 +232,12 @@ export default function App() {
         method: 'POST',
         body: form,
       });
-      const data = await res.json();
+      const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(res);
       if (!res.ok) throw new Error(data.error || 'Upload failed.');
-      await fetchDashboard();
+      if (!data.projectId || !data.jobId) {
+        throw new Error('Server did not return an upload job ID.');
+      }
+      await fetchDashboard(0);
       setActiveProjectId(data.projectId);
       setActiveJobId(data.jobId);
       setActiveNav('create');
@@ -230,8 +270,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId: activeProject.id, ...params }),
       });
-      const data = await res.json();
+      const data = await safeReadJson<{ jobId?: string; error?: string }>(res);
       if (!res.ok) throw new Error(data.error || 'Unable to start clip rendering.');
+      if (!data.jobId) {
+        throw new Error('Server did not return a render job ID.');
+      }
       setActiveJobId(data.jobId);
       setStudioSubView('pipeline');
     } catch (err) {
@@ -250,9 +293,9 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId: activeProject.id }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not regenerate candidates.');
-      setProjects((prev) => prev.map((p) => (p.id === data.project.id ? data.project : p)));
+      const data = await safeReadJson<{ project?: ProjectDetail; error?: string }>(res);
+      if (!res.ok || !data.project) throw new Error(data.error || 'Could not regenerate candidates.');
+      setProjects((prev) => prev.map((p) => (p.id === data.project!.id ? data.project! : p)));
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : 'Regeneration failed.');
     } finally {
@@ -265,7 +308,7 @@ export default function App() {
       method: 'DELETE',
     });
     if (res.ok) {
-      const remaining = await fetchDashboard();
+      const remaining = await fetchDashboard(0);
       if (activeProjectId === projectId) {
         setActiveProjectId(remaining[0]?.id ?? null);
       }
@@ -278,8 +321,8 @@ export default function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(next),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Failed to save settings.');
+    const data = await safeReadJson<{ settings?: UserSettings; error?: string }>(res);
+    if (!res.ok || !data.settings) throw new Error(data.error || 'Failed to save settings.');
     setSettings(data.settings);
   };
 
@@ -314,19 +357,37 @@ export default function App() {
         {globalError && (
           <div
             role="alert"
-            className="mx-auto mb-6 max-w-[1200px] flex items-center justify-between gap-3 rounded-lg border border-rose-500/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-200"
+            className="mx-auto mb-6 max-w-[1200px] flex flex-wrap items-center justify-between gap-3 rounded-lg border border-rose-500/40 bg-rose-950/30 px-4 py-3 text-xs text-rose-200"
           >
             <div className="flex items-center gap-2">
               <AlertCircle className="h-4 w-4 shrink-0 text-rose-400" aria-hidden="true" />
               <span>{globalError}</span>
             </div>
-            <button
-              type="button"
-              onClick={() => setGlobalError(null)}
-              className="min-h-[36px] px-2 text-rose-300 hover:text-white font-medium"
-            >
-              Dismiss
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  setGlobalError(null);
+                  try {
+                    await fetchDashboard(0);
+                  } catch (err) {
+                    setGlobalError(
+                      err instanceof Error ? err.message : 'Unable to connect to ClipHunt API.',
+                    );
+                  }
+                }}
+                className="min-h-[36px] rounded border border-rose-400/40 px-2.5 text-rose-100 hover:bg-rose-900/40 font-medium"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => setGlobalError(null)}
+                className="min-h-[36px] px-2 text-rose-300 hover:text-white font-medium"
+              >
+                Dismiss
+              </button>
+            </div>
           </div>
         )}
 

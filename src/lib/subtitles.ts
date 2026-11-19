@@ -1,4 +1,4 @@
-import { CaptionConfig, TranscriptSegment } from '../shared/types';
+import type { CaptionConfig, TranscriptSegment } from '../shared/types.ts';
 
 function hexToAssBgr(hex: string, alphaPercent = 0): string {
   const clean = hex.replace('#', '').trim();

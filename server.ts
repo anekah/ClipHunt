@@ -1,11 +1,11 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import multer from 'multer';
-import { createServer as createViteServer } from 'vite';
-import { buildCandidateClips, validateWeights } from './src/lib/scoringEngine';
+import { buildCandidateClips, validateWeights } from './src/lib/scoringEngine.ts';
 import {
   DEFAULT_CAPTION_CONFIG,
   MEDIA_DIR,
@@ -21,17 +21,17 @@ import {
   listAllGeneratedClips,
   listProjects,
   saveUserSettings,
-} from './server/db';
-import { verifyFfmpegAvailable } from './server/ffmpegPipeline';
-import { startAnalysisJob, startRenderJob, startUploadedVideoJob } from './server/jobRunner';
-import { CaptionConfig, ScoringWeights } from './src/shared/types';
+} from './server/db.ts';
+import { verifyFfmpegAvailable } from './server/ffmpegPipeline.ts';
+import { startAnalysisJob, startRenderJob, startUploadedVideoJob } from './server/jobRunner.ts';
+import type { CaptionConfig, ScoringWeights } from './src/shared/types.ts';
 
 const require = createRequire(import.meta.url);
 const { ZipArchive } = require('archiver') as {
   ZipArchive: new (options?: { zlib?: { level?: number } }) => import('archiver').Archiver;
 };
 
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 const maxUploadMb = Number(process.env.MAX_UPLOAD_MB || 250);
 
 const upload = multer({
@@ -92,7 +92,14 @@ function streamVideoWithRanges(filePath: string, req: Request, res: Response) {
 }
 
 async function createApp() {
-  await verifyFfmpegAvailable();
+  try {
+    await verifyFfmpegAvailable();
+  } catch (err) {
+    console.warn(
+      'FFmpeg/FFprobe availability check failed at startup:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   const app = express();
   app.use(express.json({ limit: '2mb' }));
@@ -453,14 +460,36 @@ async function createApp() {
     res.json({ settings: updated });
   });
 
+  // Ensure unmatched API routes return JSON 404 rather than HTML SPA fallback
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'ClipHunt API endpoint not found.' });
+  });
+
+  // Always serialize Express errors (including multer & JSON syntax errors) as JSON
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    const message = err instanceof Error ? err.message : 'Unexpected server error.';
+    if (res.headersSent) return;
+    res.status(400).json({ error: message });
+  });
+
   // Frontend Vite middleware in dev, dist static in production
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
+  const isProd = process.env.NODE_ENV === 'production';
+  let useStaticDist = isProd;
+
+  if (!useStaticDist) {
+    try {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } catch {
+      useStaticDist = true;
+    }
+  }
+
+  if (useStaticDist) {
     const distDir = path.resolve(process.cwd(), 'dist');
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {

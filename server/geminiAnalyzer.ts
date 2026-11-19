@@ -1,6 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
-import { AiCandidateInsight } from '../src/lib/scoringEngine';
-import { AudioPeak, CommentSignal, SceneChange, TranscriptSegment } from '../src/shared/types';
+import type { AiCandidateInsight } from '../src/lib/scoringEngine.ts';
+import type { AudioPeak, CommentSignal, SceneChange, TranscriptSegment } from '../src/shared/types.ts';
 
 function createGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();

@@ -1,15 +1,15 @@
 import fs from 'node:fs';
-import { buildCandidateClips } from '../src/lib/scoringEngine';
-import { validateYouTubeUrl } from '../src/lib/urlValidation';
-import {
+import { buildCandidateClips } from '../src/lib/scoringEngine.ts';
+import { validateYouTubeUrl } from '../src/lib/urlValidation.ts';
+import { PIPELINE_STAGES } from '../src/shared/types.ts';
+import type {
   AudioPeak,
   CaptionConfig,
   HeatmapPoint,
-  PIPELINE_STAGES,
   PipelineStageKey,
   SceneChange,
   TranscriptSegment,
-} from '../src/shared/types';
+} from '../src/shared/types.ts';
 import {
   DEFAULT_CAPTION_CONFIG,
   DEFAULT_USER_ID,
@@ -19,16 +19,16 @@ import {
   getSourcePathForProject,
   getUserSettings,
   upsertJob,
-} from './db';
+} from './db.ts';
 import {
   analyzeAudioPeaks,
   detectSceneChanges,
   extractThumbnailFrame,
   probeVideo,
   renderDualClips,
-} from './ffmpegPipeline';
-import { analyzeMomentsWithGemini } from './geminiAnalyzer';
-import { inspectYouTubeVideo } from './youtubeService';
+} from './ffmpegPipeline.ts';
+import { analyzeMomentsWithGemini } from './geminiAnalyzer.ts';
+import { inspectYouTubeVideo } from './youtubeService.ts';
 
 function updateStage(
   projectId: string,

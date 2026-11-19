@@ -3,15 +3,15 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { generateAssSubtitles } from '../src/lib/subtitles';
-import {
+import { generateAssSubtitles } from '../src/lib/subtitles.ts';
+import type {
   AudioPeak,
   CaptionConfig,
   SceneChange,
   TranscriptSegment,
   ValidationReport,
-} from '../src/shared/types';
-import { CLIPS_DIR, MEDIA_DIR, TMP_DIR } from './db';
+} from '../src/shared/types.ts';
+import { CLIPS_DIR, MEDIA_DIR, TMP_DIR } from './db.ts';
 
 const execFileAsync = promisify(execFile);
 

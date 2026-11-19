@@ -1,14 +1,14 @@
-import {
+import { DEFAULT_SCORING_WEIGHTS } from '../shared/types.ts';
+import type {
   AudioPeak,
   CandidateClip,
   CommentSignal,
-  DEFAULT_SCORING_WEIGHTS,
   HeatmapPoint,
   SceneChange,
   ScoringWeights,
   SignalScores,
   TranscriptSegment,
-} from '../shared/types';
+} from '../shared/types.ts';
 
 export const TARGET_CLIP_DURATION_SEC = 20.0;
 

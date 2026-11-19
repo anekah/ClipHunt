@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { TranscriptSegment } from '../src/shared/types';
+import type { TranscriptSegment } from '../src/shared/types.ts';
 
 const execFileAsync = promisify(execFile);
 
@@ -186,11 +186,19 @@ export async function inspectYouTubeVideo(
       const dateMatch = html.match(/"publishDate":"([^"]+)"/);
       if (dateMatch) uploadDate = dateMatch[1];
 
-      const captionMatch = html.match(/"captionTracks":\[(\{.*?\})\]/);
+      const captionMatch = html.match(/"captionTracks":(\[[\s\S]*?\])/);
       if (captionMatch) {
-        const urlMatch = captionMatch[1].match(/"baseUrl":"([^"]+)"/);
-        if (urlMatch) {
-          const capUrl = urlMatch[1].replace(/\\u0026/g, '&');
+        let baseUrl: string | undefined;
+        try {
+          const tracks = JSON.parse(captionMatch[1]) as Array<{ baseUrl?: string; languageCode?: string }>;
+          const enTrack = tracks.find((t) => t.languageCode?.startsWith('en')) ?? tracks[0];
+          baseUrl = enTrack?.baseUrl;
+        } catch {
+          const urlMatch = captionMatch[1].match(/"baseUrl":"([^"]+)"/);
+          baseUrl = urlMatch?.[1];
+        }
+        if (baseUrl) {
+          const capUrl = baseUrl.replace(/\\u0026/g, '&');
           const capResp = await fetch(capUrl, { signal: AbortSignal.timeout(6000) });
           if (capResp.ok) {
             const xml = await capResp.text();

@@ -1,12 +1,12 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import {
+import { CAPTION_PRESETS, DEFAULT_SCORING_WEIGHTS } from '../src/shared/types.ts';
+import type {
   AnalysisJob,
-  CAPTION_PRESETS,
   CandidateClip,
   CaptionConfig,
-  DEFAULT_SCORING_WEIGHTS,
   GeneratedClip,
   ProcessingLogEntry,
   ProjectDetail,
@@ -14,9 +14,28 @@ import {
   UserSettings,
   UserUsage,
   VideoMetadata,
-} from '../src/shared/types';
+} from '../src/shared/types.ts';
 
-export const DATA_DIR = path.resolve(process.cwd(), process.env.CLIPHUNT_DATA_DIR || '.data');
+function resolveWritableDataDir(): string {
+  const candidates = [
+    process.env.CLIPHUNT_DATA_DIR
+      ? path.resolve(process.cwd(), process.env.CLIPHUNT_DATA_DIR)
+      : path.resolve(process.cwd(), '.data'),
+    path.join(os.tmpdir(), 'cliphunt-data'),
+  ];
+  for (const dir of candidates) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch {
+      // Try next fallback location
+    }
+  }
+  return path.join(os.tmpdir(), 'cliphunt-data');
+}
+
+export const DATA_DIR = resolveWritableDataDir();
 export const MEDIA_DIR = path.join(DATA_DIR, 'media');
 export const CLIPS_DIR = path.join(DATA_DIR, 'clips');
 export const TMP_DIR = path.join(DATA_DIR, 'tmp');
