@@ -57,20 +57,47 @@ export function saveLocalSettings(next: UserSettings): UserSettings {
   return next;
 }
 
+const LEGACY_SYNTHETIC_CUES = new Set([
+  'Mid-section escalation, key reveal, and pacing shift.',
+  'Peak payoff moment and headline reaction sequence.',
+  'Callback punchline and closing takeaway.',
+  'Highlighted visual & pacing peak inside uploaded footage.',
+]);
+
+function isLegacySyntheticSegment(seg: TranscriptSegment): boolean {
+  return (
+    seg.id.startsWith('yt_cue_') ||
+    seg.id === 'up_1' ||
+    seg.id === 'up_2' ||
+    LEGACY_SYNTHETIC_CUES.has(seg.text)
+  );
+}
+
 export function loadLocalProjects(): ProjectDetail[] {
   try {
     const raw = localStorage.getItem(PROJECTS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ProjectDetail[];
     if (!Array.isArray(parsed)) return [];
-    // Refresh session playability flags based on active blob URLs
+    // Refresh session playability flags and strip any legacy synthetic cues
     return parsed.map((p) => {
       const blobUrl = sessionVideoUrls.get(p.id);
       if (!p.metadata) return p;
+      const cleanedTranscript = (p.metadata.transcript ?? []).filter(
+        (seg) => !isLegacySyntheticSegment(seg),
+      );
       return {
         ...p,
+        candidates: (p.candidates ?? []).map((c) =>
+          LEGACY_SYNTHETIC_CUES.has(c.transcriptExcerpt) ||
+          /opening hook and premise from/i.test(c.transcriptExcerpt)
+            ? { ...c, transcriptExcerpt: 'Captured visual & audio reaction sequence.' }
+            : c,
+        ),
         metadata: {
           ...p.metadata,
+          transcript: cleanedTranscript,
+          subtitlesAvailable: cleanedTranscript.length > 0,
           sourceStreamUrl: blobUrl || '',
           hasPlayableSource: Boolean(blobUrl),
         },
@@ -167,32 +194,7 @@ export async function analyzeLocalYouTubeUrl(url: string): Promise<ProjectDetail
   }
 
   const durationSec = 180;
-  const transcript: TranscriptSegment[] = [
-    {
-      id: `yt_cue_${projectId}_1`,
-      startSec: 0,
-      endSec: 20,
-      text: `${title} — opening hook and premise from ${channelName}.`,
-    },
-    {
-      id: `yt_cue_${projectId}_2`,
-      startSec: 28,
-      endSec: 52,
-      text: 'Mid-section escalation, key reveal, and pacing shift.',
-    },
-    {
-      id: `yt_cue_${projectId}_3`,
-      startSec: 72,
-      endSec: 98,
-      text: 'Peak payoff moment and headline reaction sequence.',
-    },
-    {
-      id: `yt_cue_${projectId}_4`,
-      startSec: 120,
-      endSec: 148,
-      text: 'Callback punchline and closing takeaway.',
-    },
-  ];
+  const transcript: TranscriptSegment[] = [];
 
   const candidates = buildCandidateClips({
     projectId,
@@ -239,7 +241,7 @@ export async function analyzeLocalYouTubeUrl(url: string): Promise<ProjectDetail
       commentSignals: [],
       heatmapPoints: [],
       heatmapAvailable: false,
-      subtitlesAvailable: true,
+      subtitlesAvailable: false,
       sourceStreamUrl: '',
       hasPlayableSource: false,
     },
@@ -352,20 +354,7 @@ export async function analyzeLocalVideoFile(file: File): Promise<ProjectDetail> 
   const cleanTitle =
     file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim() || 'Uploaded Studio Video';
 
-  const transcript: TranscriptSegment[] = [
-    {
-      id: 'up_1',
-      startSec: 0,
-      endSec: Math.min(probe.durationSec, 12),
-      text: `Opening setup from ${cleanTitle}.`,
-    },
-    {
-      id: 'up_2',
-      startSec: Math.min(probe.durationSec * 0.35, Math.max(0, probe.durationSec - 15)),
-      endSec: Math.min(probe.durationSec, probe.durationSec * 0.75),
-      text: 'Highlighted visual & pacing peak inside uploaded footage.',
-    },
-  ];
+  const transcript: TranscriptSegment[] = [];
 
   const candidates = buildCandidateClips({
     projectId,

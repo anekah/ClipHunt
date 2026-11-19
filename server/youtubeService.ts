@@ -433,47 +433,6 @@ export async function inspectYouTubeVideo(
     }));
   }
 
-  // Build fallback transcript cues from chapters or description lines when timed captions are empty
-  if (transcript.length === 0) {
-    if (chapters.length > 0) {
-      transcript = chapters.map((ch, idx) => ({
-        id: `yt_ch_${idx}`,
-        startSec: ch.startSec,
-        endSec: Math.min(
-          durationSec,
-          chapters[idx + 1]?.startSec ?? ch.startSec + 20,
-        ),
-        text: ch.title,
-      }));
-    } else {
-      const summaryLine =
-        description
-          .split(/\r?\n/)
-          .map((l) => l.trim())
-          .find((l) => l.length > 15 && !l.startsWith('http')) || title;
-      transcript = [
-        {
-          id: 'yt_meta_1',
-          startSec: 0,
-          endSec: Math.min(durationSec, 22),
-          text: `${title} — opening setup`,
-        },
-        {
-          id: 'yt_meta_2',
-          startSec: Math.round(durationSec * 0.35),
-          endSec: Math.min(durationSec, Math.round(durationSec * 0.35) + 22),
-          text: summaryLine.slice(0, 140),
-        },
-        {
-          id: 'yt_meta_3',
-          startSec: Math.round(durationSec * 0.7),
-          endSec: Math.min(durationSec, Math.round(durationSec * 0.7) + 22),
-          text: `${title} — climax & audience payoff`,
-        },
-      ];
-    }
-  }
-
   return {
     accessible: true,
     downloadable: Boolean(directStreamUrl),

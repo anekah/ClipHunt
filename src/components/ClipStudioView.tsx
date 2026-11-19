@@ -323,8 +323,12 @@ export function ClipStudioView({
                 </div>
               )}
 
-              {/* Live CSS Caption Overlay Preview */}
-              {captionConfig.enabled && captionConfig.preset !== 'off' && activeTranscriptLine && (
+              {/* Live CSS Caption Overlay Preview (only on playable direct/uploaded videos with real captions) */}
+              {metadata?.hasPlayableSource &&
+                metadata?.subtitlesAvailable &&
+                captionConfig.enabled &&
+                captionConfig.preset !== 'off' &&
+                activeTranscriptLine && (
                 <div
                   className={`pointer-events-none absolute inset-x-6 flex justify-center ${
                     captionConfig.position === 'center' ? 'top-1/2 -translate-y-1/2' : 'bottom-12'
