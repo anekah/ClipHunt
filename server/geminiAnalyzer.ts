@@ -51,8 +51,8 @@ export async function analyzeMomentsWithGemini(params: {
   ].join('\n');
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-4-hydrogen',
+    const geminiPromise = ai.models.generateContent({
+      model: 'gemini-2.5-flash',
       contents: prompt,
       config: {
         systemInstruction:
@@ -91,6 +91,15 @@ export async function analyzeMomentsWithGemini(params: {
           },
         },
       },
+    });
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Gemini analysis timed out after 6s')), 6000);
+    });
+
+    const response = await Promise.race([geminiPromise, timeoutPromise]).finally(() => {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     });
 
     const raw = (response.text ?? '[]').trim();

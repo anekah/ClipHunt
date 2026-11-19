@@ -12,6 +12,7 @@ import { TopBar } from './components/TopBar';
 import {
   analyzeLocalVideoFile,
   analyzeLocalYouTubeUrl,
+  attachLocalVideoToProject,
   deleteLocalProject,
   getLocalDashboard,
   regenerateLocalCandidates,
@@ -74,6 +75,7 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isAttachingSource, setIsAttachingSource] = useState(false);
   const useLocalFallbackRef = useRef(false);
 
   const loadLocalState = useCallback(() => {
@@ -267,7 +269,7 @@ export default function App() {
       setActiveProjectId(project.id);
       setActiveJobId(null);
       setActiveNav('create');
-      setStudioSubView('pipeline');
+      setStudioSubView('studio');
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : 'Analysis request failed.');
     } finally {
@@ -314,6 +316,42 @@ export default function App() {
       setGlobalError(err instanceof Error ? err.message : 'Video upload failed.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleAttachSourceFile = async (projectId: string, file: File) => {
+    setIsAttachingSource(true);
+    setGlobalError(null);
+    try {
+      if (!useLocalFallbackRef.current) {
+        const form = new FormData();
+        form.append('video', file);
+        const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/attach-source`, {
+          method: 'POST',
+          body: form,
+        });
+        if (!isStaticUnavailableApi(res)) {
+          const data = await safeReadJson<{ project?: ProjectDetail; error?: string }>(res);
+          if (!res.ok || !data.project) {
+            throw new Error(data.error || 'Failed to attach video file.');
+          }
+          setProjects((prev) =>
+            prev.map((p) => (p.id === data.project!.id ? data.project! : p)),
+          );
+          await fetchDashboard(0);
+          setStudioSubView('studio');
+          return;
+        }
+        useLocalFallbackRef.current = true;
+      }
+
+      await attachLocalVideoToProject(projectId, file);
+      loadLocalState();
+      setStudioSubView('studio');
+    } catch (err) {
+      setGlobalError(err instanceof Error ? err.message : 'Failed to attach video file.');
+    } finally {
+      setIsAttachingSource(false);
     }
   };
 
@@ -551,9 +589,11 @@ export default function App() {
                     project={activeProject}
                     onSelectAndRender={handleSelectAndRender}
                     onRegenerateCandidates={handleRegenerateCandidates}
+                    onAttachSourceFile={handleAttachSourceFile}
                     onViewDownloads={() => setStudioSubView('downloads')}
                     isRendering={isRendering}
                     isRegenerating={isRegenerating}
+                    isAttachingSource={isAttachingSource}
                   />
                 )}
               </>

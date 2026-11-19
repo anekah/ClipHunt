@@ -111,9 +111,9 @@ export async function startAnalysisJob(params: {
       let transcript: TranscriptSegment[] = [];
       let audioPeaks: AudioPeak[] = [];
       let sceneChanges: SceneChange[] = [];
-      const commentSignals: Array<{ timestampSec: number; commentText: string; likes: number; matchedPhrase?: string }> = [];
-      const heatmapPoints: HeatmapPoint[] = [];
-      const chapters: Array<{ title: string; startSec: number }> = [];
+      let commentSignals: Array<{ timestampSec: number; commentText: string; likes: number; matchedPhrase?: string }> = [];
+      let heatmapPoints: HeatmapPoint[] = [];
+      let chapters: Array<{ title: string; startSec: number }> = [];
       const sourceType = 'youtube' as const;
       let youtubeVideoId: string | undefined;
 
@@ -155,12 +155,15 @@ export async function startAnalysisJob(params: {
         if (lookup.uploadDate) uploadDate = lookup.uploadDate;
         if (lookup.durationSec) durationSec = lookup.durationSec;
         if (lookup.transcript) transcript = lookup.transcript;
+        if (lookup.chapters) chapters = lookup.chapters;
+        if (lookup.commentSignals) commentSignals = lookup.commentSignals;
+        if (lookup.heatmapPoints) heatmapPoints = lookup.heatmapPoints;
 
         db.prepare(
           'UPDATE projects SET title = ?, thumbnail_url = ?, updated_at = ? WHERE id = ?',
         ).run(title, thumbnailUrl, new Date().toISOString(), projectId);
 
-        if (!lookup.accessible || !lookup.downloadable) {
+        if (!lookup.accessible) {
           db.prepare(
             `INSERT INTO video_metadata (
               id, project_id, source_type, youtube_video_id, source_url, title, channel_name,
@@ -180,13 +183,13 @@ export async function startAnalysisJob(params: {
             durationSec,
             uploadDate,
             thumbnailUrl,
-            JSON.stringify([]),
+            JSON.stringify(chapters),
             JSON.stringify(transcript),
             JSON.stringify([]),
             JSON.stringify([]),
-            JSON.stringify([]),
-            JSON.stringify([]),
-            0,
+            JSON.stringify(commentSignals),
+            JSON.stringify(heatmapPoints),
+            heatmapPoints.length > 0 ? 1 : 0,
             transcript.length > 0 ? 1 : 0,
             null,
           );
@@ -200,7 +203,7 @@ export async function startAnalysisJob(params: {
             jobId,
             'extracting_metadata',
             'restricted',
-            lookup.restrictionReason || 'Direct stream download unavailable.',
+            lookup.restrictionReason || 'Video unavailable or restricted.',
             {
               errorCode: lookup.errorCode,
               errorMessage: lookup.restrictionReason,
@@ -209,6 +212,14 @@ export async function startAnalysisJob(params: {
           );
           return;
         }
+
+        updateStage(
+          projectId,
+          jobId,
+          'retrieving_captions',
+          'running',
+          `Loaded "${title}" (${Math.round(durationSec)}s, ${transcript.length} caption/chapter cues, ${heatmapPoints.length} replay markers).`,
+        );
       }
 
       updateStage(
@@ -560,6 +571,44 @@ export async function startUploadedVideoJob(params: {
   });
 
   return { projectId, jobId };
+}
+
+export async function attachSourceVideoToProject(params: {
+  projectId: string;
+  filePath: string;
+  originalName: string;
+}) {
+  const existing = getProjectById(params.projectId);
+  if (!existing || !existing.metadata) {
+    throw new Error('Project not found.');
+  }
+
+  const probe = await probeVideo(params.filePath);
+  if (!probe.hasVideo || probe.durationSec < 5) {
+    throw new Error('Attached file must contain a valid video stream of at least 5 seconds.');
+  }
+
+  const audioPeaks = await analyzeAudioPeaks(params.filePath);
+  const sceneChanges = await detectSceneChanges(params.filePath);
+
+  db.prepare(
+    `UPDATE video_metadata
+     SET duration_sec = ?, audio_peaks_json = ?, scene_changes_json = ?, local_source_path = ?
+     WHERE project_id = ?`,
+  ).run(
+    probe.durationSec,
+    JSON.stringify(audioPeaks),
+    JSON.stringify(sceneChanges),
+    params.filePath,
+    params.projectId,
+  );
+
+  db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(
+    new Date().toISOString(),
+    params.projectId,
+  );
+
+  return getProjectById(params.projectId);
 }
 
 export async function startRenderJob(params: {

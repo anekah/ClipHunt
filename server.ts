@@ -23,7 +23,12 @@ import {
   saveUserSettings,
 } from './server/db.ts';
 import { verifyFfmpegAvailable } from './server/ffmpegPipeline.ts';
-import { startAnalysisJob, startRenderJob, startUploadedVideoJob } from './server/jobRunner.ts';
+import {
+  attachSourceVideoToProject,
+  startAnalysisJob,
+  startRenderJob,
+  startUploadedVideoJob,
+} from './server/jobRunner.ts';
 import type { CaptionConfig, ScoringWeights } from './src/shared/types.ts';
 
 const require = createRequire(import.meta.url);
@@ -158,6 +163,29 @@ async function createApp() {
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : 'Video upload failed.',
+      });
+    }
+  });
+
+  app.post('/api/projects/:projectId/attach-source', upload.single('video'), async (req, res) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ error: 'No video file uploaded.' });
+        return;
+      }
+      const ext = path.extname(req.file.originalname) || '.mp4';
+      const renamedPath = `${req.file.path}${ext}`;
+      fs.renameSync(req.file.path, renamedPath);
+
+      const project = await attachSourceVideoToProject({
+        projectId: String(req.params.projectId),
+        filePath: renamedPath,
+        originalName: req.file.originalname,
+      });
+      res.json({ project });
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : 'Failed to attach video file.',
       });
     }
   });

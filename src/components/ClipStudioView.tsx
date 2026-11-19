@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Subtitles,
+  Upload,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { formatTimestamp } from '../lib/urlValidation';
@@ -32,22 +33,27 @@ interface ClipStudioViewProps {
     captionConfig: CaptionConfig;
   }) => Promise<void>;
   onRegenerateCandidates: () => Promise<void>;
+  onAttachSourceFile?: (projectId: string, file: File) => Promise<void>;
   onViewDownloads: () => void;
   isRendering: boolean;
   isRegenerating: boolean;
+  isAttachingSource?: boolean;
 }
 
 export function ClipStudioView({
   project,
   onSelectAndRender,
   onRegenerateCandidates,
+  onAttachSourceFile,
   onViewDownloads,
   isRendering,
   isRegenerating,
+  isAttachingSource = false,
 }: ClipStudioViewProps) {
   const metadata = project.metadata;
   const duration = Math.max(20, metadata?.durationSec ?? 65);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const attachInputRef = useRef<HTMLInputElement>(null);
 
   const initialCand =
     project.candidates.find((c) => c.id === project.selectedCandidateId) ??
@@ -71,6 +77,7 @@ export function ClipStudioView({
   );
   const [currentTime, setCurrentTime] = useState(startSec);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [embedPlayNonce, setEmbedPlayNonce] = useState(0);
 
   // Sync when switching projects
   useEffect(() => {
@@ -137,10 +144,13 @@ export function ClipStudioView({
     setSelectedCandidateId(cand.id);
     setStartSec(cand.startSec);
     setEndSec(cand.endSec);
+    setCurrentTime(cand.startSec);
     setExpandedSignalId(cand.id);
     if (videoRef.current) {
       videoRef.current.currentTime = cand.startSec;
       videoRef.current.play().catch(() => {});
+    } else if (metadata?.youtubeVideoId) {
+      setEmbedPlayNonce((n) => n + 1);
     }
   };
 
@@ -160,7 +170,13 @@ export function ClipStudioView({
 
   const togglePlayClip = () => {
     const vid = videoRef.current;
-    if (!vid) return;
+    if (!vid) {
+      if (metadata?.youtubeVideoId) {
+        setCurrentTime(startSec);
+        setEmbedPlayNonce((n) => n + 1);
+      }
+      return;
+    }
     if (vid.paused) {
       if (vid.currentTime < startSec || vid.currentTime >= endSec) {
         vid.currentTime = startSec;
@@ -205,9 +221,44 @@ export function ClipStudioView({
               View Rendered Clips ({project.generatedClips.length})
             </button>
           )}
+          {!metadata?.hasPlayableSource && onAttachSourceFile && (
+            <>
+              <input
+                ref={attachInputRef}
+                type="file"
+                accept="video/mp4,video/quicktime,video/webm,video/x-matroska,.mp4,.mov,.webm,.mkv"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (file) {
+                    void onAttachSourceFile(project.id, file);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={isAttachingSource}
+                onClick={() => attachInputRef.current?.click()}
+                className="inline-flex min-h-[44px] sm:min-h-0 w-full sm:w-auto items-center justify-center gap-2 rounded-lg border border-white/25 bg-[#080808] px-4 py-2 text-xs font-medium text-white hover:bg-white/10 disabled:opacity-50 transition-colors whitespace-nowrap shrink-0 touch-manipulation"
+              >
+                {isAttachingSource ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                <span>{isAttachingSource ? 'Attaching Video...' : 'Attach MP4 to Render'}</span>
+              </button>
+            </>
+          )}
           <button
             type="button"
             disabled={isRendering || !metadata?.hasPlayableSource}
+            title={
+              metadata?.hasPlayableSource
+                ? 'Render 16:9 and 9:16 MP4 clips'
+                : 'Attach an authorized MP4/MOV/WebM file to render downloadable 16:9 + 9:16 exports'
+            }
             onClick={() =>
               onSelectAndRender({
                 candidateId: selectedCandidateId,
@@ -243,6 +294,21 @@ export function ClipStudioView({
                   playsInline
                   preload="metadata"
                   className="h-full w-full object-contain"
+                />
+              ) : metadata?.youtubeVideoId ? (
+                <iframe
+                  key={`${metadata.youtubeVideoId}_${embedPlayNonce}`}
+                  data-testid="youtube-embed-player"
+                  title={`YouTube preview: ${project.title}`}
+                  src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(
+                    metadata.youtubeVideoId,
+                  )}?start=${Math.max(0, Math.floor(startSec))}&end=${Math.max(
+                    1,
+                    Math.ceil(endSec),
+                  )}&autoplay=${embedPlayNonce > 0 ? 1 : 0}&rel=0&modestbranding=1`}
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                  className="h-full w-full border-0"
                 />
               ) : project.thumbnailUrl ? (
                 <img
