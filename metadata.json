@@ -1,0 +1,6 @@
+{
+  "name": "ClipHunt",
+  "description": "AI-powered viral video clip extraction and dual-format rendering studio.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
