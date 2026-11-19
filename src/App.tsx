@@ -1,5 +1,5 @@
 import { AlertCircle, Loader2 } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnalysisPipelineView } from './components/AnalysisPipelineView';
 import { ClipLibraryView } from './components/ClipLibraryView';
 import { ClipStudioView } from './components/ClipStudioView';
@@ -9,6 +9,14 @@ import { HelpSupportView } from './components/HelpSupportView';
 import { ProjectsView } from './components/ProjectsView';
 import { SettingsView } from './components/SettingsView';
 import { TopBar } from './components/TopBar';
+import {
+  analyzeLocalVideoFile,
+  analyzeLocalYouTubeUrl,
+  deleteLocalProject,
+  getLocalDashboard,
+  regenerateLocalCandidates,
+  saveLocalSettings,
+} from './lib/localWorkspace';
 import {
   CaptionConfig,
   GeneratedClip,
@@ -23,6 +31,13 @@ type StudioSubView = 'pipeline' | 'studio' | 'downloads';
 interface ClipLibraryEntry extends GeneratedClip {
   projectTitle: string;
   thumbnailUrl: string;
+}
+
+function isStaticUnavailableApi(res: Response): boolean {
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  if (res.status === 404 || res.status === 405) return true;
+  if (res.ok && ct.includes('text/html')) return true;
+  return false;
 }
 
 async function safeReadJson<T>(res: Response): Promise<T> {
@@ -59,45 +74,68 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
+  const useLocalFallbackRef = useRef(false);
 
-  const fetchDashboard = useCallback(async (retries = 2) => {
-    let lastError: unknown = null;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
-        const [dashRes, clipsRes] = await Promise.all([
-          fetch('/api/dashboard'),
-          fetch('/api/clips'),
-        ]);
-        if (!dashRes.ok) {
-          if (attempt < retries && (dashRes.status === 502 || dashRes.status === 503 || dashRes.status === 504)) {
-            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
-            continue;
+  const loadLocalState = useCallback(() => {
+    const local = getLocalDashboard();
+    setUsage(local.usage);
+    setProjects(local.projects);
+    setSettings(local.settings);
+    setLibraryClips(local.clips);
+    return local.projects;
+  }, []);
+
+  const fetchDashboard = useCallback(
+    async (retries = 2) => {
+      if (useLocalFallbackRef.current) {
+        return loadLocalState();
+      }
+      let lastError: unknown = null;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const [dashRes, clipsRes] = await Promise.all([
+            fetch('/api/dashboard'),
+            fetch('/api/clips'),
+          ]);
+          if (isStaticUnavailableApi(dashRes)) {
+            useLocalFallbackRef.current = true;
+            return loadLocalState();
           }
-          throw new Error(`Failed to load workspace data (HTTP ${dashRes.status}).`);
-        }
-        const dashData = await safeReadJson<{
-          usage: UserUsage;
-          projects: ProjectDetail[];
-          settings: UserSettings;
-        }>(dashRes);
-        setUsage(dashData.usage);
-        setProjects(dashData.projects);
-        setSettings(dashData.settings);
+          if (!dashRes.ok) {
+            if (
+              attempt < retries &&
+              (dashRes.status === 502 || dashRes.status === 503 || dashRes.status === 504)
+            ) {
+              await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+              continue;
+            }
+            throw new Error(`Failed to load workspace data (HTTP ${dashRes.status}).`);
+          }
+          const dashData = await safeReadJson<{
+            usage: UserUsage;
+            projects: ProjectDetail[];
+            settings: UserSettings;
+          }>(dashRes);
+          setUsage(dashData.usage);
+          setProjects(dashData.projects);
+          setSettings(dashData.settings);
 
-        if (clipsRes.ok) {
-          const clipsData = await safeReadJson<{ clips: ClipLibraryEntry[] }>(clipsRes);
-          setLibraryClips(clipsData.clips);
-        }
-        return dashData.projects;
-      } catch (err) {
-        lastError = err;
-        if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          if (clipsRes.ok) {
+            const clipsData = await safeReadJson<{ clips: ClipLibraryEntry[] }>(clipsRes);
+            setLibraryClips(clipsData.clips);
+          }
+          return dashData.projects;
+        } catch (err) {
+          lastError = err;
+          if (attempt < retries) {
+            await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          }
         }
       }
-    }
-    throw lastError instanceof Error ? lastError : new Error('Failed to load workspace data.');
-  }, []);
+      throw lastError instanceof Error ? lastError : new Error('Failed to load workspace data.');
+    },
+    [loadLocalState],
+  );
 
   useEffect(() => {
     (async () => {
@@ -138,10 +176,10 @@ export default function App() {
       try {
         const res = await fetch(`/api/video/status/${encodeURIComponent(activeJobId)}`);
         if (!res.ok) return;
-        const data = (await res.json()) as {
+        const data = await safeReadJson<{
           job: NonNullable<ProjectDetail['job']>;
           project: ProjectDetail | null;
-        };
+        }>(res);
 
         if (cancelled || !data.project) return;
         setProjects((prev) => {
@@ -200,19 +238,34 @@ export default function App() {
     setIsSubmitting(true);
     setGlobalError(null);
     try {
-      const res = await fetch('/api/video/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
-      const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(res);
-      if (!res.ok) throw new Error(data.error || 'Failed to start analysis.');
-      if (!data.projectId || !data.jobId) {
-        throw new Error('Server did not return an analysis job ID.');
+      if (!useLocalFallbackRef.current) {
+        const res = await fetch('/api/video/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        if (!isStaticUnavailableApi(res)) {
+          const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(
+            res,
+          );
+          if (!res.ok) throw new Error(data.error || 'Failed to start analysis.');
+          if (!data.projectId || !data.jobId) {
+            throw new Error('Server did not return an analysis job ID.');
+          }
+          await fetchDashboard(0);
+          setActiveProjectId(data.projectId);
+          setActiveJobId(data.jobId);
+          setActiveNav('create');
+          setStudioSubView('pipeline');
+          return;
+        }
+        useLocalFallbackRef.current = true;
       }
-      await fetchDashboard(0);
-      setActiveProjectId(data.projectId);
-      setActiveJobId(data.jobId);
+
+      const project = await analyzeLocalYouTubeUrl(url);
+      loadLocalState();
+      setActiveProjectId(project.id);
+      setActiveJobId(null);
       setActiveNav('create');
       setStudioSubView('pipeline');
     } catch (err) {
@@ -226,22 +279,37 @@ export default function App() {
     setIsSubmitting(true);
     setGlobalError(null);
     try {
-      const form = new FormData();
-      form.append('video', file);
-      const res = await fetch('/api/video/upload', {
-        method: 'POST',
-        body: form,
-      });
-      const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(res);
-      if (!res.ok) throw new Error(data.error || 'Upload failed.');
-      if (!data.projectId || !data.jobId) {
-        throw new Error('Server did not return an upload job ID.');
+      if (!useLocalFallbackRef.current) {
+        const form = new FormData();
+        form.append('video', file);
+        const res = await fetch('/api/video/upload', {
+          method: 'POST',
+          body: form,
+        });
+        if (!isStaticUnavailableApi(res)) {
+          const data = await safeReadJson<{ projectId?: string; jobId?: string; error?: string }>(
+            res,
+          );
+          if (!res.ok) throw new Error(data.error || 'Upload failed.');
+          if (!data.projectId || !data.jobId) {
+            throw new Error('Server did not return an upload job ID.');
+          }
+          await fetchDashboard(0);
+          setActiveProjectId(data.projectId);
+          setActiveJobId(data.jobId);
+          setActiveNav('create');
+          setStudioSubView('pipeline');
+          return;
+        }
+        useLocalFallbackRef.current = true;
       }
-      await fetchDashboard(0);
-      setActiveProjectId(data.projectId);
-      setActiveJobId(data.jobId);
+
+      const project = await analyzeLocalVideoFile(file);
+      loadLocalState();
+      setActiveProjectId(project.id);
+      setActiveJobId(null);
       setActiveNav('create');
-      setStudioSubView('pipeline');
+      setStudioSubView('studio');
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : 'Video upload failed.');
     } finally {
@@ -259,6 +327,12 @@ export default function App() {
     setIsRendering(true);
     setGlobalError(null);
     try {
+      if (useLocalFallbackRef.current) {
+        throw new Error(
+          'Dual 16:9 & 9:16 MP4 rendering requires the ClipHunt FFmpeg backend server. Previewing, candidate scoring, and timeline trimming are active in browser mode.',
+        );
+      }
+
       await fetch('/api/video/select-clip', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -270,6 +344,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ projectId: activeProject.id, ...params }),
       });
+      if (isStaticUnavailableApi(res)) {
+        useLocalFallbackRef.current = true;
+        throw new Error(
+          'Dual 16:9 & 9:16 MP4 rendering requires the ClipHunt FFmpeg backend server.',
+        );
+      }
       const data = await safeReadJson<{ jobId?: string; error?: string }>(res);
       if (!res.ok) throw new Error(data.error || 'Unable to start clip rendering.');
       if (!data.jobId) {
@@ -288,14 +368,24 @@ export default function App() {
     setIsRegenerating(true);
     setGlobalError(null);
     try {
-      const res = await fetch('/api/video/regenerate-candidate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectId: activeProject.id }),
-      });
-      const data = await safeReadJson<{ project?: ProjectDetail; error?: string }>(res);
-      if (!res.ok || !data.project) throw new Error(data.error || 'Could not regenerate candidates.');
-      setProjects((prev) => prev.map((p) => (p.id === data.project!.id ? data.project! : p)));
+      if (!useLocalFallbackRef.current) {
+        const res = await fetch('/api/video/regenerate-candidate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ projectId: activeProject.id }),
+        });
+        if (!isStaticUnavailableApi(res)) {
+          const data = await safeReadJson<{ project?: ProjectDetail; error?: string }>(res);
+          if (!res.ok || !data.project)
+            throw new Error(data.error || 'Could not regenerate candidates.');
+          setProjects((prev) => prev.map((p) => (p.id === data.project!.id ? data.project! : p)));
+          return;
+        }
+        useLocalFallbackRef.current = true;
+      }
+
+      const updated = regenerateLocalCandidates(activeProject.id);
+      setProjects((prev) => prev.map((p) => (p.id === updated.id ? updated : p)));
     } catch (err) {
       setGlobalError(err instanceof Error ? err.message : 'Regeneration failed.');
     } finally {
@@ -304,26 +394,47 @@ export default function App() {
   };
 
   const handleDeleteProject = async (projectId: string) => {
-    const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
-      method: 'DELETE',
-    });
-    if (res.ok) {
-      const remaining = await fetchDashboard(0);
-      if (activeProjectId === projectId) {
-        setActiveProjectId(remaining[0]?.id ?? null);
+    if (!useLocalFallbackRef.current) {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+        method: 'DELETE',
+      });
+      if (!isStaticUnavailableApi(res)) {
+        if (res.ok) {
+          const remaining = await fetchDashboard(0);
+          if (activeProjectId === projectId) {
+            setActiveProjectId(remaining[0]?.id ?? null);
+          }
+        }
+        return;
       }
+      useLocalFallbackRef.current = true;
+    }
+
+    deleteLocalProject(projectId);
+    const remaining = loadLocalState();
+    if (activeProjectId === projectId) {
+      setActiveProjectId(remaining[0]?.id ?? null);
     }
   };
 
   const handleSaveSettings = async (next: UserSettings) => {
-    const res = await fetch('/api/settings', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(next),
-    });
-    const data = await safeReadJson<{ settings?: UserSettings; error?: string }>(res);
-    if (!res.ok || !data.settings) throw new Error(data.error || 'Failed to save settings.');
-    setSettings(data.settings);
+    if (!useLocalFallbackRef.current) {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(next),
+      });
+      if (!isStaticUnavailableApi(res)) {
+        const data = await safeReadJson<{ settings?: UserSettings; error?: string }>(res);
+        if (!res.ok || !data.settings) throw new Error(data.error || 'Failed to save settings.');
+        setSettings(data.settings);
+        return;
+      }
+      useLocalFallbackRef.current = true;
+    }
+
+    const updated = saveLocalSettings(next);
+    setSettings(updated);
   };
 
   const handleSelectNav = (nav: NavSection) => {
